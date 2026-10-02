@@ -1,0 +1,19 @@
+# Telegram Bot Framework (aiogram 3.x)
+aiogram>=3.0.0
+
+# Backend API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+
+# Database & ORM (SQLAlchemy 2.0)
+sqlalchemy>=2.0.0
+psycopg[binary]
+
+# Authentication & Config
+pyjwt>=2.8.0
+pydantic>=2.0.0
+pydantic-settings
+python-dotenv>=1.0.0
+
+# HTTP Client for Bot to API interactions
+httpx>=0.25.0

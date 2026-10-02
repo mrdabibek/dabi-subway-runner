@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+runner.db
+*.db-journal
+.stop_requested
+node_modules/
+.venv/
+*.log
+
