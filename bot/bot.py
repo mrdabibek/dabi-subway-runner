@@ -47,6 +47,7 @@ log = logging.getLogger("runner-bot")
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 BOT_USERNAME: str = os.getenv("BOT_USERNAME", "mrxplay_bot").lstrip("@")
 WEBAPP_URL: str = os.getenv("WEBAPP_URL", "")
+REQUIRED_CHANNEL: str = os.getenv("REQUIRED_CHANNEL", "").strip()
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN topilmadi. .env fayliga bot tokeningizni kiriting.")
@@ -89,6 +90,31 @@ def get_or_create_user(
 
 
 # ---------------- UI & Keyboard Builders ----------------
+
+async def check_user_subscription(bot: Bot, uid: int) -> bool:
+    """Check if user is subscribed to REQUIRED_CHANNEL if configured."""
+    if not REQUIRED_CHANNEL:
+        return True
+    try:
+        chat_id = REQUIRED_CHANNEL if REQUIRED_CHANNEL.startswith("@") or REQUIRED_CHANNEL.startswith("-100") else f"@{REQUIRED_CHANNEL}"
+        member = await bot.get_chat_member(chat_id=chat_id, user_id=uid)
+        return member.status not in ("left", "kicked")
+    except Exception as ex:
+        log.warning("Kanal a'zoligini tekshirishda xatolik (%s): %s", REQUIRED_CHANNEL, ex)
+        return True
+
+
+def subscription_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard for mandatory channel subscription."""
+    channel_clean = REQUIRED_CHANNEL.lstrip("@")
+    channel_url = f"https://t.me/{channel_clean}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Kanalga a'zo bo'lish", url=channel_url)],
+            [InlineKeyboardButton(text="✅ Obunani tekshirish", callback_data="check_subscription")],
+        ]
+    )
+
 
 def is_valid_webapp_url(url: str) -> bool:
     """Verify that the WebApp URL is a valid public HTTPS endpoint with a real domain."""
@@ -195,6 +221,20 @@ async def send_welcome_screen(
 
         ref_message_line = ""
 
+        # Check mandatory channel subscription if configured
+        if REQUIRED_CHANNEL and target_msg.bot:
+            is_subbed = await check_user_subscription(target_msg.bot, uid)
+            if not is_subbed:
+                channel_name = REQUIRED_CHANNEL if REQUIRED_CHANNEL.startswith("@") else f"@{REQUIRED_CHANNEL}"
+                sub_text = (
+                    f"🏃‍♂️ <b>Subway Runner 3D o'yiniga xush kelibsiz!</b>\n\n"
+                    f"⚠️ <b>O'yinni boshlash uchun rasmiy kanalimizga a'zo bo'ling:</b>\n"
+                    f"👉 {channel_name}\n\n"
+                    f"Kanalga a'zo bo'lgach, «✅ Obunani tekshirish» tugmasini bosing:"
+                )
+                await target_msg.answer(text=sub_text, reply_markup=subscription_keyboard())
+                return
+
         # Handle referral / gift payload
         if payload.startswith("ref_") or payload.startswith("gift_"):
             is_gift = payload.startswith("gift_")
@@ -285,6 +325,19 @@ async def cmd_play(msg: Message):
         return
 
     uid = msg.from_user.id
+
+    if REQUIRED_CHANNEL and msg.bot:
+        if not await check_user_subscription(msg.bot, uid):
+            channel_name = REQUIRED_CHANNEL if REQUIRED_CHANNEL.startswith("@") else f"@{REQUIRED_CHANNEL}"
+            await msg.answer(
+                text=(
+                    f"⚠️ <b>O'yinni o'ynash uchun rasmiy kanalimizga a'zo bo'ling:</b>\n"
+                    f"👉 {channel_name}\n\n"
+                    f"Kanalga a'zo bo'lgach, «✅ Obunani tekshirish» tugmasini bosing:"
+                ),
+                reply_markup=subscription_keyboard(),
+            )
+            return
 
     db: Session = SessionLocal()
     try:
@@ -413,6 +466,34 @@ async def cmd_gift(msg: Message):
         )
     finally:
         db.close()
+
+
+@router.callback_query(F.data == "check_subscription")
+async def on_check_subscription(cb: CallbackQuery):
+    """Handle check subscription button."""
+    if cb.from_user is None or cb.bot is None:
+        return
+    uid = cb.from_user.id
+    if await check_user_subscription(cb.bot, uid):
+        await cb.answer("✅ Obuna tasdiqlandi! Rahmat!", show_alert=False)
+        try:
+            if cb.message:
+                await cb.message.delete()
+        except Exception:
+            pass
+        if cb.message:
+            await send_welcome_screen(
+                target_msg=cb.message,
+                uid=uid,
+                username=cb.from_user.username,
+                first_name=cb.from_user.first_name,
+            )
+    else:
+        channel_name = REQUIRED_CHANNEL if REQUIRED_CHANNEL.startswith("@") else f"@{REQUIRED_CHANNEL}"
+        await cb.answer(
+            f"❌ Siz hali {channel_name} kanaliga a'zo bo'lmadingiz!\nIltimos, avval kanalga obuna bo'ling.",
+            show_alert=True,
+        )
 
 
 @router.callback_query(F.data == "need_https")

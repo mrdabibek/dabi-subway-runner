@@ -387,7 +387,7 @@
         $('menu').classList.add('hidden');
         $('over').classList.add('hidden');
         currentSessionId = null;
-        window.RunnerGame.start();
+        window.RunnerGame.start({ bestScore: currentUser ? currentUser.best_score : 0 });
         setBackButton(true, quitToMenu);
         return;
       }
@@ -406,7 +406,7 @@
 
           $('menu').classList.add('hidden');
           $('over').classList.add('hidden');
-          window.RunnerGame.start();
+          window.RunnerGame.start({ bestScore: currentUser ? currentUser.best_score : 0 });
           setBackButton(true, quitToMenu);
         })
         .catch(function (err) {
@@ -693,6 +693,10 @@
       onMysteryBox: function (count) {
         triggerHaptic('success');
         showToast("🎁 Sovg'a qutisi topildi! (" + count + ")");
+      },
+      onNewRecord: function (newScore) {
+        triggerHaptic('success');
+        showToast('🏆 YANGI REKORD O\'RNATDINGIZ: ' + newScore + ' m! 🔥', 3500);
       },
       onShieldBreak: function () {
         showToast('💥 Skeytbord to\'qnashuvdan saqlab qoldi!');

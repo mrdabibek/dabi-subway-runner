@@ -24,8 +24,8 @@
   var MAX_SPEED = 30.0;
   var SPEED_UP_EVERY = 15.0;
   var SPEED_UP_FACTOR = 1.08;
-  var JUMP_V = 13.5;
-  var SUPER_JUMP_V = 18.0;
+  var JUMP_V = 14.5;
+  var SUPER_JUMP_V = 19.5;
   var GRAVITY = 32.0;
   var JUMP_BUFFER = 0.16;
   var LANE_LERP = 13.0;
@@ -270,6 +270,8 @@
     spawnAcc: 0.0,
     clock: 0,
     cb: {},
+    bestScore: 0,
+    newRecordAnnounced: false,
 
     // Active Character (Jake is the sole hero)
     characterIndex: 0,
@@ -1718,7 +1720,44 @@
   // ==========================================
   // Spawning System: Rows, Powerups, Coins
   // ==========================================
-  function spawnObstacle(kind, lenScale) {
+  function isLaneOccupiedNearSpawn(laneX, minDistance) {
+    for (var i = 0; i < G.obstaclePool.length; i++) {
+      var o = G.obstaclePool[i];
+      if (!o.active) continue;
+      if (Math.abs(o.holder.position.x - laneX) < 0.5) {
+        var dist = Math.abs(o.holder.position.z - SPAWN_Z);
+        if (dist < minDistance) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function laneHasObstaclesAhead(laneX) {
+    for (var i = 0; i < G.obstaclePool.length; i++) {
+      var o = G.obstaclePool[i];
+      if (!o.active) continue;
+      if (Math.abs(o.holder.position.x - laneX) < 0.5) {
+        if (o.holder.position.z > (SPAWN_Z - 5.0) && o.holder.position.z < 12.0) {
+          return true; // Lane is already occupied by an obstacle ahead!
+        }
+      }
+    }
+    return false;
+  }
+
+  function hasAnyOncomingTrain() {
+    for (var i = 0; i < G.obstaclePool.length; i++) {
+      var o = G.obstaclePool[i];
+      if (o.active && o.kind === 'full' && o.oncoming) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function spawnObstacle(kind, laneX, lenScale) {
     for (var i = 0; i < G.obstaclePool.length; i++) {
       var o = G.obstaclePool[i];
       if (o.active) continue;
@@ -1729,6 +1768,10 @@
       o.holder.visible = true;
       o.horned = false;
 
+      // Position in assigned lane immediately
+      o.holder.position.x = laneX;
+      o.holder.position.z = SPAWN_Z;
+
       // Hide all sub-meshes initially
       if (o.lowMesh) o.lowMesh.visible = false;
       if (o.highMesh) o.highMesh.visible = false;
@@ -1738,10 +1781,16 @@
 
       if (kind === 'full') {
         // Subway Surfers: Oncoming moving trains vs stationary trains with ramp
-        var isOncoming = (Math.random() < 0.50 && G.score > 35.0);
+        // An oncoming train can ONLY spawn if the entire lane ahead is completely clear
+        // and no other oncoming train is currently active!
+        var laneClear = !laneHasObstaclesAhead(laneX);
+        var alreadyOncoming = hasAnyOncomingTrain();
+        var isOncoming = (laneClear && !alreadyOncoming && Math.random() < 0.40 && G.score > 25.0);
+
         o.oncoming = isOncoming;
-        o.trainSpeed = isOncoming ? (8.5 + Math.random() * 6.0 + G.speed * 0.25) : 0.0;
-        o.hasRamp = !isOncoming && (Math.random() < 0.55);
+        o.trainSpeed = isOncoming ? (7.5 + Math.random() * 4.5 + Math.min(6.0, G.speed * 0.20)) : 0.0;
+        // Stationary trains have a 65% chance to feature a ramp leading to the roof!
+        o.hasRamp = !isOncoming && (Math.random() < 0.65);
 
         if (G.trainProto) {
           if (!o.trainMesh) {
@@ -1830,30 +1879,49 @@
     var numBlocks = Math.random() < 0.50 ? 1 : 2;
     var kinds = ['full', 'low', 'high'];
     var extraGap = 0;
+    var spawnedLanes = [];
 
     for (var i = 0; i < numBlocks; i++) {
+      var laneIndex = lanes[i];
+      var laneX = LANES[laneIndex];
+
+      // Safe lane check: avoid tailgating or stacking obstacles in the same lane
+      if (isLaneOccupiedNearSpawn(laneX, 32.0)) {
+        continue;
+      }
+
       var kind = kinds[(Math.random() * 3) | 0];
-      var lenScale = (kind === 'full') ? (0.9 + Math.random() * 0.5) : 1.0;
-      var obs = spawnObstacle(kind, lenScale);
+      var lenScale = (kind === 'full') ? (0.9 + Math.random() * 0.4) : 1.0;
+      var obs = spawnObstacle(kind, laneX, lenScale);
       if (obs) {
-        obs.holder.position.x = LANES[lanes[i]];
-        obs.holder.position.z = SPAWN_Z;
+        spawnedLanes.push(laneIndex);
         if (kind === 'full') {
-          extraGap = Math.max(extraGap, obs.hz * 0.6);
-          // Spawn coins on top of the train roof!
-          if (Math.random() < 0.70) {
+          extraGap = Math.max(extraGap, obs.hz * 0.7);
+
+          // If train has a ramp: spawn a staircase of guide coins leading up the ramp!
+          if (obs.hasRamp) {
+            spawnCoin(laneX, 1.45, SPAWN_Z + obs.hz + 3.2);
+            spawnCoin(laneX, 2.35, SPAWN_Z + obs.hz + 1.8);
+            spawnCoin(laneX, 3.20, SPAWN_Z + obs.hz + 0.4);
+          }
+
+          // Spawn coins along the train roof!
+          if (Math.random() < 0.75) {
             var roofCoins = 4;
             var startZ = SPAWN_Z + obs.hz * 0.7;
             var stepZ = (obs.hz * 1.4) / roofCoins;
             for (var rc = 0; rc < roofCoins; rc++) {
-              spawnCoin(obs.holder.position.x, 3.60, startZ - rc * stepZ);
+              spawnCoin(laneX, 3.60, startZ - rc * stepZ);
             }
           }
         }
       }
     }
 
-    var freeLane = LANES[lanes[2]];
+    // Determine free lane for collectibles
+    var freeLaneIndex = lanes.find(function (l) { return !spawnedLanes.includes(l); });
+    if (freeLaneIndex === undefined) freeLaneIndex = lanes[2];
+    var freeLane = LANES[freeLaneIndex];
 
     G.distSinceLastBox = (G.distSinceLastBox || 0) + 18.0;
     var spawnRoll = Math.random();
@@ -2031,9 +2099,13 @@
   // ==========================================
   // Game Lifecycle & State Management
   // ==========================================
-  function start() {
+  function start(options) {
     if (!G.inited) return;
     reset();
+    if (options && typeof options.bestScore === 'number') {
+      G.bestScore = options.bestScore;
+      G.newRecordAnnounced = false;
+    }
 
     if (G.animActions && G.animActions.taunt) {
       G.state = 'intro';
@@ -2317,25 +2389,28 @@
           var to = G.obstaclePool[ti];
           if (!to.active || to.kind !== 'full') continue;
           var top = to.holder.position;
-          var roofY = top.y + to.hy; // Train roof height ~2.7m. Standing on roof => 2.7 + 0.9 = 3.60m
 
           var dx = Math.abs(top.x - px);
           if (dx < (PLAYER_HX + to.hx + 0.15)) {
-            var zDist = top.z - pz;
-            if (Math.abs(zDist) <= (to.hz + 0.40)) {
-              // Player is over the train body!
-              // Supported if already grounded on roof, or landing from above
-              if (G.py >= (roofY + 0.35) || (G.grounded && Math.abs(G.py - (roofY + 0.90)) < 0.45)) {
-                floorY = Math.max(floorY, roofY + 0.90);
-              }
-            } else if (to.hasRamp && zDist > to.hz && zDist <= (to.hz + 4.8)) {
-              // Player is running on the inclined ramp leading to the roof
-              var rampDist = zDist - to.hz;
-              var rampProgress = 1.0 - (rampDist / 4.8);
-              rampProgress = Math.max(0.0, Math.min(1.0, rampProgress));
-              var rampFloor = 0.90 + rampProgress * roofY;
-              if (G.py <= rampFloor + 0.60) {
+            // 1. Train Ramp Check (Smooth incline from ground to train roof)
+            if (to.hasRamp) {
+              var rTipZ = top.z + to.hz + 4.5;
+              var rRoofZ = top.z + to.hz;
+              if (pz >= (rRoofZ - 0.25) && pz <= (rTipZ + 0.25)) {
+                var rampProg = (rTipZ - pz) / 4.5;
+                rampProg = Math.max(0.0, Math.min(1.0, rampProg));
+                var rampFloor = 0.90 + rampProg * 2.70;
                 floorY = Math.max(floorY, rampFloor);
+              }
+            }
+
+            // 2. Train Roof Check
+            var bodyBackZ = top.z - to.hz - 0.35;
+            var bodyFrontZ = top.z + to.hz + 0.35;
+            if (pz >= bodyBackZ && pz <= bodyFrontZ) {
+              // Supported if elevated on roof (climbed ramp, jumped onto roof, or already running)
+              if (G.py >= 2.45 || (G.grounded && G.py >= 2.85)) {
+                floorY = Math.max(floorY, 3.60);
               }
             }
           }
@@ -2640,6 +2715,13 @@
       updateCoinsAndPowerups(dz, dt);
       checkCollisions();
       triggerCallback('onScore', Math.floor(G.score), G.coins, G.speed);
+
+      // Realtime High Score Announcement!
+      if (G.bestScore > 0 && !G.newRecordAnnounced && G.score > G.bestScore) {
+        G.newRecordAnnounced = true;
+        AudioFX.fanfare();
+        triggerCallback('onNewRecord', Math.floor(G.score));
+      }
     }
 
     // --- Dynamic Camera Following (Elevates into sky during Jetpack flight) ---
@@ -2867,11 +2949,30 @@
       if (!o.active) continue;
 
       var op = o.holder.position;
-      if (Math.abs(op.z) > pHz + o.hz) continue;
-
       var dx = Math.abs(op.x - px);
       var xOverlap = (pHx + o.hx) - dx;
       if (xOverlap <= 0) continue;
+
+      // Subway Surfers: Train Roof & Ramp Special Handling
+      if (o.kind === 'full') {
+        var rTip = op.z + o.hz + 4.5;
+        var rRoof = op.z + o.hz;
+        var rBack = op.z - o.hz;
+
+        // If train has a ramp and player is running on the ramp: NEVER CRASH!
+        if (o.hasRamp && pz >= (rRoof - 0.40) && pz <= (rTip + 0.40)) {
+          continue;
+        }
+
+        // If player is on or above the train roof: NEVER CRASH!
+        if (pz >= (rBack - 0.40) && pz <= (rRoof + 0.40)) {
+          if (py >= 2.45 || (py - pHy) >= 2.15) {
+            continue; // Safely running on roof or soaring in the air!
+          }
+        }
+      }
+
+      if (Math.abs(op.z) > pHz + o.hz) continue;
 
       var oTop = op.y + o.hy;
       var oBot = op.y - o.hy;
@@ -2879,11 +2980,10 @@
       var pBot = py - pHy;
 
       if (pTop > oBot && pBot < oTop) {
-        // Subway Surfers: Landing or running on train roof, or running up a ramp
         if (o.kind === 'full') {
-          // If feet are at or landing onto roof level (pBot >= oTop - 0.40), or on ramp: NO CRASH!
-          if (pBot >= (oTop - 0.40) || (o.hasRamp && (op.z - G.player.position.z) > o.hz)) {
-            continue; // Safely running on train roof or ramp!
+          // If feet are at or landing onto roof level, or already supported: NO CRASH!
+          if (pBot >= (oTop - 0.45) || py >= 2.45) {
+            continue;
           }
         }
 
