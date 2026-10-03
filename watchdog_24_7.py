@@ -114,6 +114,20 @@ def cleanup_children() -> None:
 atexit.register(cleanup_children)
 
 
+def is_public_tunnel_alive(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        req = urllib.request.Request(
+            f"{url}/health",
+            headers={"User-Agent": "WatchdogHealthCheck/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
 def main_watchdog() -> None:
     log.info("🚀 24/7 Subway Runner Watchdog ishga tushdi...")
     env = read_env()
@@ -123,13 +137,15 @@ def main_watchdog() -> None:
     cloudflared_proc: subprocess.Popen | None = None
     bot_proc: subprocess.Popen | None = None
     current_tunnel_url = ""
+    public_fail_count = 0
     lock = threading.Lock()
 
     def on_url_found(url: str) -> None:
-        nonlocal current_tunnel_url, bot_proc
+        nonlocal current_tunnel_url, bot_proc, public_fail_count
         with lock:
             if url and url != current_tunnel_url:
                 current_tunnel_url = url
+                public_fail_count = 0
                 webapp_url = f"{url}/webapp/"
                 log.info("🌐 Yangi Cloudflare URL topildi: %s", url)
                 update_env_urls(webapp_url, url)
@@ -152,12 +168,19 @@ def main_watchdog() -> None:
                     m = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
                     if m:
                         on_url_found(m.group(0))
+                    elif "Tunnel not found" in line or "Unauthorized: Tunnel" in line:
+                        log.warning("⚠️ Cloudflare tunneli server tomonidan yopildi! Yangilanmoqda...")
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        break
         except Exception as ex:
             log.warning("Cloudflare stream o'qishda xato: %s", ex)
 
     while True:
         try:
-            # 1. Check Uvicorn
+            # 1. Check Uvicorn (local)
             if not is_uvicorn_alive():
                 log.info("⚡ Uvicorn ishga tushirilmoqda (127.0.0.1:8000)...")
                 if uvicorn_proc and uvicorn_proc.poll() is None:
@@ -172,9 +195,23 @@ def main_watchdog() -> None:
                 active_children.append(uvicorn_proc)
                 time.sleep(3)
 
-            # 2. Check Cloudflared Tunnel
+            # 2. Check Cloudflared Tunnel & Public Connectivity
+            if current_tunnel_url and not is_public_tunnel_alive(current_tunnel_url):
+                public_fail_count += 1
+                log.warning("⚠️ Ochiq havola javob bermayapti: %s (%d/2)", current_tunnel_url, public_fail_count)
+                if public_fail_count >= 2:
+                    log.warning("🔄 Ochiq Cloudflare tunnel uzilgan (ERR_NAME_NOT_RESOLVED). Yangi tunnel olinmoqda...")
+                    if cloudflared_proc:
+                        try: cloudflared_proc.kill()
+                        except Exception: pass
+                        cloudflared_proc = None
+                    current_tunnel_url = ""
+                    public_fail_count = 0
+            else:
+                public_fail_count = 0
+
             if cloudflared_proc is None or cloudflared_proc.poll() is not None:
-                log.info("⚡ Cloudflare Tunnel ishga tushirilmoqda...")
+                log.info("⚡ Cloudflare Tunnel yangidan ishga tushirilmoqda...")
                 cloudflared_proc = subprocess.Popen(
                     [CLOUDFLARED_EXE, "tunnel", "--edge-ip-version", "4", "--url", "http://127.0.0.1:8000"],
                     cwd=str(BASE_DIR),
